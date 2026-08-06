@@ -1012,6 +1012,7 @@ body{background:#F4F2EE;}
   <button class="nav-btn" onclick="goTo('morosidad',this)"><span class="nav-icon">🚨</span>Morosidad <span class="nb" id="nb-mora"></span></button>
   <button class="nav-btn" id="nav-cobranza" onclick="goTo('cobranza',this)"><span class="nav-icon">📨</span>Cobranza <span class="nb" id="nb-cobranza"></span></button>
   <button class="nav-btn" id="nav-anotaciones" onclick="goTo('anotaciones',this)"><span class="nav-icon">📋</span>Anotaciones <span class="nb" id="nb-anotaciones"></span></button>
+  <button class="nav-btn" id="nav-documentacion" onclick="goTo('documentacion',this)"><span class="nav-icon">📄</span>Documentación <span class="nb" id="nb-doc"></span></button>
   <button class="nav-btn" onclick="goTo('espera',this)"><span class="nav-icon">⏳</span>Lista de espera <span class="nb" id="nb-espera"></span></button>
 
   <div class="nav-sep"></div>
@@ -1060,6 +1061,7 @@ body{background:#F4F2EE;}
     <div class="view" id="v-morosidad"></div>
     <div class="view" id="v-cobranza"></div>
     <div class="view" id="v-anotaciones"></div>
+    <div class="view" id="v-documentacion"></div>
     <div class="view" id="v-espera"></div>
     <div class="view" id="v-anual"></div>
     <div class="view" id="v-captacion"></div>
@@ -2065,6 +2067,7 @@ function renderDash(){
       <div class="cex-kpi" style="--tone:#6D28D9;--soft:#EDE9FE"><div class="cex-kpi-top"><div class="cex-kpi-label">Alumnos activos</div><div class="cex-kpi-icon">●●</div></div><div class="cex-kpi-value">${act.length}</div><div class="cex-kpi-sub">activos en ${curMes}</div><div class="cex-pill">${esperaActiva} en espera</div></div>
       <div class="cex-kpi" style="--tone:#0E1B2B;--soft:#E6EEF5"><div class="cex-kpi-top"><div class="cex-kpi-label">Movimiento del mes</div><div class="cex-kpi-icon">↕</div></div><div class="cex-kpi-value">${movimientoNeto>=0?'+':''}${movimientoNeto}</div><div class="cex-kpi-sub">${nuevos} nuevos · ${bajas} bajas en ${curMes}</div><div class="cex-pill">solo mes seleccionado</div></div>
       <div class="cex-kpi" style="--tone:#D92D20;--soft:#FEE4E2;cursor:pointer" title="Abrir módulo de Cobranza" onclick="goTo('cobranza',document.getElementById('nav-cobranza'))"><div class="cex-kpi-top"><div class="cex-kpi-label">Morosidad</div><div class="cex-kpi-icon">⚠</div></div><div class="cex-kpi-value">${nMorosos}</div><div class="cex-kpi-sub">con morosidad activa · clic para gestionar</div><div class="cex-pill">${nMorosos>0?'Crítico':'Controlado'}</div></div>
+      ${(function(){try{ if(typeof docPendientes!=='function'||!docState.cargado) return ''; const p=docPendientes(); const nv=p.filter(a=>{const n=docNivel(a);return n==='vencido'||n==='critico';}).length; const tone=nv>0?'#D92D20':(p.length>0?'#B45309':'#0E1B2B'); const soft=nv>0?'#FEE4E2':(p.length>0?'#FEF3C7':'#E6EEF5'); return `<div class="cex-kpi" style="--tone:${tone};--soft:${soft};cursor:pointer" title="Abrir Documentación" onclick="goTo('documentacion',document.getElementById('nav-documentacion'))"><div class="cex-kpi-top"><div class="cex-kpi-label">Documentación</div><div class="cex-kpi-icon">📄</div></div><div class="cex-kpi-value">${p.length}</div><div class="cex-kpi-sub">sin firmar · clic para gestionar</div><div class="cex-pill">${nv>0?nv+' vencidos':(p.length>0?'en plazo':'Al día')}</div></div>`; }catch(e){return '';}})()}
       <div class="cex-kpi" style="--tone:#0E1B2B;--soft:#E6EEF5"><div class="cex-kpi-top"><div class="cex-kpi-label">Ocupación</div><div class="cex-kpi-icon">🚌</div></div><div class="cex-kpi-value">${pctOcup}%</div><div class="cex-kpi-sub">${totalOcM+totalOcT} / ${totalCapM+totalCapT} cupos</div><div class="cex-pill">${totalVac} cupos libres</div></div>
     </div>
 
@@ -2525,6 +2528,7 @@ function renderAlumnos(){
               <span class="student-tag tag-jornada">${_h(a.jornada||'Sin jornada')}</span>
               <span class="student-tag tag-servicio">${_h(a.tipo||'Servicio')}</span>
               ${descuentoTagHTML(a,curMes)}
+              ${(typeof docBadgeHTML==='function')?docBadgeHTML(a):''}
               ${a.familiaId?`<span class="student-tag tag-familia" title="Hermanos vinculados">👨‍👩‍👧 ${_h(familiaEtiqueta(a.familiaId))} · ${familiaMiembros(a.familiaId).filter(m=>!m.a.baja).length}</span>`:''}
             </div>
           </div>
@@ -3758,6 +3762,7 @@ async function sbLoadAll(){
           obs: a.obs||'',
           mesIngreso: a.mes_ingreso||'',
           fechaInicioServicio: a.fecha_inicio_servicio||null,
+          docEstado: a.doc_estado||'firmado', docFecha: a.doc_fecha||null, docMotivo: a.doc_motivo||null, docPor: a.doc_por||null, docDesde: a.doc_desde||null,
           cobraProporcionalPrimerMes: a.cobra_proporcional||false,
           montoPrimerMes: a.monto_primer_mes||null,
           fechaBajaEfectiva: a.fecha_baja_efectiva||null,
@@ -6243,6 +6248,416 @@ document.body.insertAdjacentHTML('beforeend', `
 // Precarga diferida para poblar el badge
 window.addEventListener('load', ()=>{
   setTimeout(()=>{ anLoad().then(()=>{ try{ updateNavBadges(); }catch(e){} }); }, 3200);
+});
+
+})();
+</script>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   MÓDULO DOCUMENTACIÓN — capa aditiva (no modifica lógica existente)
+   Estado de firma del reglamento/contrato por alumno.
+   Estados: firmado · pendiente · no_firma. Umbral: 7 días sin firmar
+   desde fecha_inicio_servicio (o fecha de marca si aquélla está vacía).
+   Los campos viven en la tabla alumnos (doc_estado, doc_fecha,
+   doc_motivo, doc_por, doc_desde). Requiere ALTER TABLE (ver SQL).
+   ══════════════════════════════════════════════════════════════════ */
+(function(){
+'use strict';
+
+TITLES.documentacion = 'Documentación';
+
+const DOC_DIAS_LIMITE = 7;
+
+const DOC_MOTIVOS_DEFAULT = [
+  'Recién ingresado, dentro de plazo',
+  'Pendiente de entregar el documento',
+  'No ubicable / no está en el domicilio',
+  'En proceso de firma',
+  'Se negó a firmar',
+  'Otro'
+];
+
+const DOC_SQL_INSTALACION =
+`-- Módulo Documentación · Cobrixa · ejecutar en Supabase SQL Editor
+-- 1) Agregar columnas a la tabla alumnos (no borra nada existente)
+alter table alumnos add column if not exists doc_estado text default 'firmado';
+alter table alumnos add column if not exists doc_fecha date;
+alter table alumnos add column if not exists doc_motivo text;
+alter table alumnos add column if not exists doc_por text;
+alter table alumnos add column if not exists doc_desde date;
+
+-- 2) Respaldo recomendado ANTES de correr esto:
+--    exporta la tabla alumnos como CSV desde Supabase.
+
+-- 3) Marcar a TODOS los alumnos actuales como firmados (decisión del usuario).
+--    Ajusta la fecha si corresponde. Solo afecta filas con doc_estado nulo o por defecto.
+update alumnos
+  set doc_estado = 'firmado',
+      doc_fecha = coalesce(doc_fecha, date '2026-03-01')
+  where doc_estado is null or doc_estado = 'firmado';
+
+-- 4) Config de motivos (opcional, editable desde la app)
+create table if not exists documentacion_config (
+  clave text primary key,
+  valor jsonb not null,
+  updated_at timestamptz default now()
+);
+alter table documentacion_config enable row level security;
+create policy "auth all doc_config" on documentacion_config for all to authenticated using (true) with check (true);`;
+
+const docState = {
+  cargado:false, remoto:false,
+  motivos: DOC_MOTIVOS_DEFAULT.slice(),
+  avisoActivo: true   // interruptor del aviso al abrir
+};
+let docSearchVal = '';
+
+function _docLS(k){ try{ return JSON.parse(localStorage.getItem(k)||'null'); }catch(e){ return null; } }
+function _docLSset(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+
+async function docLoad(){
+  if(docState.cargado) return;
+  let remoto=false;
+  if(typeof _sb !== 'undefined' && _sb){
+    try{
+      const cfg = await _sb.from('documentacion_config').select('*');
+      if(!cfg.error){
+        remoto=true;
+        (cfg.data||[]).forEach(r=>{
+          if(r.clave==='motivos' && Array.isArray(r.valor)) docState.motivos=r.valor;
+          if(r.clave==='aviso_activo') docState.avisoActivo = r.valor!==false;
+        });
+      }
+    }catch(e){}
+  }
+  docState.remoto=remoto;
+  if(!remoto){
+    docState.motivos = _docLS('cobrixa_doc_motivos')||DOC_MOTIVOS_DEFAULT.slice();
+    const av=_docLS('cobrixa_doc_aviso'); docState.avisoActivo = (av===null?true:av);
+  } else {
+    const av=_docLS('cobrixa_doc_aviso'); if(av!==null) docState.avisoActivo=av; // preferencia local del interruptor
+  }
+  docState.cargado=true;
+}
+
+async function docSaveConfig(clave, valor){
+  if(docState.remoto){
+    const {error}=await _sb.from('documentacion_config').upsert({clave, valor, updated_at:new Date().toISOString()});
+    if(error){ console.warn('documentacion_config:', error); return false; }
+  } else {
+    _docLSset('cobrixa_doc_'+(clave==='aviso_activo'?'aviso':clave), valor);
+  }
+  return true;
+}
+
+// ── Estado de documentación de un alumno ─────────────────────────
+function docEstado(a){ return a.docEstado || 'firmado'; }
+
+// Días sin firmar: desde fecha_inicio_servicio, o desde doc_desde (marca), o 0 si no hay ancla
+function docDiasSinFirmar(a){
+  if(docEstado(a)==='firmado') return 0;
+  const ancla = a.fechaInicioServicio || a.docDesde || null;
+  if(!ancla) return null; // sin fecha de referencia → no se puede calcular
+  const d0 = new Date(ancla+'T00:00:00'); if(isNaN(d0)) return null;
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  let n=0, d=new Date(d0);
+  while(d<hoy){ d.setDate(d.getDate()+1); const w=d.getDay(); if(w!==0&&w!==6) n++; }
+  return n;
+}
+
+// Nivel de urgencia visual
+function docNivel(a){
+  const e=docEstado(a);
+  if(e==='firmado') return 'firmado';
+  if(e==='no_firma'){
+    // "se negó" es lo más grave; los demás motivos de no_firma son alerta media
+    return (a.docMotivo && a.docMotivo.toLowerCase().includes('neg')) ? 'critico' : 'alerta';
+  }
+  // pendiente
+  const dias = docDiasSinFirmar(a);
+  if(dias===null) return 'pendiente_sinfecha';
+  return dias > DOC_DIAS_LIMITE ? 'vencido' : 'enplazo';
+}
+
+function docPendientes(){
+  return activos().filter(a=>docEstado(a)!=='firmado');
+}
+
+// Badge para la ficha del alumno: solo aparece si NO está firmado (lo normal no distrae)
+window.docBadgeHTML = function(a){
+  if(!a || docEstado(a)==='firmado') return '';
+  const niv=docNivel(a);
+  const rojo = (niv==='vencido'||niv==='critico');
+  const label = niv==='critico' ? 'Sin firmar · se negó' : 'Sin firmar';
+  const bg = rojo ? '#FEE2E2' : '#FEF3C7';
+  const col = rojo ? '#B91C1C' : '#B45309';
+  return `<span class="student-tag" style="background:${bg};color:${col};font-weight:700" title="Documentación pendiente — ver sección Documentación">⚠ ${label}</span>`;
+};
+
+// ── Persistencia del estado en la tabla alumnos ──────────────────
+async function docGuardarEstado(a, patch){
+  // patch: {docEstado, docFecha, docMotivo, docPor, docDesde}
+  Object.assign(a, patch);
+  if(typeof _sb !== 'undefined' && _sb && a._id){
+    const payload={ updated_at:new Date().toISOString() };
+    if('docEstado' in patch) payload.doc_estado = patch.docEstado;
+    if('docFecha' in patch)  payload.doc_fecha  = patch.docFecha||null;
+    if('docMotivo' in patch) payload.doc_motivo = patch.docMotivo||null;
+    if('docPor' in patch)    payload.doc_por    = patch.docPor||null;
+    if('docDesde' in patch)  payload.doc_desde  = patch.docDesde||null;
+    try{
+      const {error}=await _sb.from('alumnos').update(payload).eq('id',a._id);
+      if(error){ console.warn('doc update:', error); alert('Error al guardar en Supabase. Revisa la consola.'); return false; }
+    }catch(e){ console.warn(e); return false; }
+  }
+  return true;
+}
+
+// ── Render principal ─────────────────────────────────────────────
+const _docBaseRenderCurrent = window.renderCurrent;
+window.renderCurrent = function(){
+  _docBaseRenderCurrent();
+  if(curView === 'documentacion') renderDocumentacion();
+};
+
+const DOC_NIVEL_STYLE = {
+  'firmado':'background:#E8F5EE;color:#147A45',
+  'enplazo':'background:#FEF3C7;color:#B45309',
+  'vencido':'background:#FEE2E2;color:#B91C1C',
+  'critico':'background:#FEE2E2;color:#B91C1C',
+  'alerta':'background:#FEF3C7;color:#B45309',
+  'pendiente_sinfecha':'background:#E6EEF5;color:#334155'
+};
+const DOC_NIVEL_LABEL = {
+  'enplazo':'En plazo', 'vencido':'Vencido', 'critico':'Se negó',
+  'alerta':'Sin firmar', 'pendiente_sinfecha':'Sin firmar'
+};
+
+window.renderDocumentacion = function(){
+  const el=document.getElementById('v-documentacion');
+  if(!el) return;
+  if(!docState.cargado){
+    el.innerHTML='<div style="padding:2rem;text-align:center;color:var(--gr);font-size:13px">Cargando módulo de documentación…</div>';
+    docLoad().then(()=>{ if(curView==='documentacion') renderDocumentacion(); });
+    return;
+  }
+
+  const pend = docPendientes();
+  const nVenc = pend.filter(a=>docNivel(a)==='vencido').length;
+  const nNego = pend.filter(a=>docNivel(a)==='critico').length;
+  const nFirm = activos().length - pend.length;
+
+  const q=docSearchVal.trim().toLowerCase();
+  const order={'critico':0,'vencido':1,'alerta':2,'pendiente_sinfecha':3,'enplazo':4,'firmado':5};
+  // Sin búsqueda: solo pendientes. Con búsqueda: TODOS los activos (para poder marcar excepciones desde firmado).
+  let base = q ? activos().slice() : pend.slice();
+  let vis = base.sort((x,y)=> (order[docNivel(x)]??9)-(order[docNivel(y)]??9) || (x.nombre||'').localeCompare(y.nombre||''));
+  if(q) vis = vis.filter(a=>(a.nombre||'').toLowerCase().includes(q)||(a.curso||'').toLowerCase().includes(q)||(a.sector||'').toLowerCase().includes(q));
+
+  let html='';
+  if(!docState.remoto){
+    html += `<div style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:var(--r);padding:.75rem 1rem;margin-bottom:1rem;font-size:12px;color:#B45309;display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap">
+      <span>⚠️ <strong>Configuración local:</strong> la tabla de config no existe en Supabase (los estados de firma sí se guardan en alumnos si corriste el ALTER TABLE). Corre el SQL para compartir motivos entre usuarios.</span>
+      <button class="btn btn-sm" onclick="docCopiarSQL()">📋 Copiar SQL de instalación</button>
+    </div>`;
+  }
+
+  html += `<div class="kpi-row">
+    <div class="kpi ${nFirm>0?'good':''}"><div class="kpi-lbl">Firmados</div><div class="kpi-val">${nFirm}</div><div class="kpi-sub">de ${activos().length} activos</div></div>
+    <div class="kpi ${pend.length>0?'warn':''}"><div class="kpi-lbl">Sin firmar</div><div class="kpi-val">${pend.length}</div><div class="kpi-sub">requieren gestión</div></div>
+    <div class="kpi ${nVenc>0?'bad':''}"><div class="kpi-lbl">Vencidos</div><div class="kpi-val">${nVenc}</div><div class="kpi-sub">+${DOC_DIAS_LIMITE} días hábiles</div></div>
+    <div class="kpi ${nNego>0?'bad':''}"><div class="kpi-lbl">Se negaron</div><div class="kpi-val">${nNego}</div><div class="kpi-sub">riesgo alto</div></div>
+  </div>`;
+
+  html += `<div style="display:flex;gap:.5rem;align-items:center;margin-bottom:.75rem;flex-wrap:wrap">
+    <input class="sinput" id="docSearch" placeholder="Buscar alumno para cambiar su estado (firmado / pendiente / no firma)…" value="${_attr(docSearchVal)}" oninput="docOnSearch()" style="flex:1;min-width:200px">
+    <span style="font-size:11px;color:var(--tx2)">Sin buscar: solo pendientes · Busca un nombre para marcar excepciones</span>
+  </div>`;
+
+  if(!vis.length){
+    html += `<div style="text-align:center;padding:2.5rem;color:var(--gr);font-size:14px;font-weight:600">${q? 'Sin resultados para la búsqueda' : '✅ Todos los alumnos activos tienen su documentación firmada'}${!q?'<div style="font-size:12px;font-weight:400;margin-top:.5rem;color:var(--tx2)">Para marcar a alguien que no firmó, busca su nombre arriba.</div>':''}</div>`;
+  }
+
+  html += vis.map(a=>{
+    const niv=docNivel(a);
+    const dias=docDiasSinFirmar(a);
+    const idx=ALUMNOS.indexOf(a);
+    const firmado = docEstado(a)==='firmado';
+    const borde = firmado ? 'border-left:3px solid #147A45' : ((niv==='vencido'||niv==='critico')?'border-left:3px solid #B91C1C':'border-left:3px solid #B45309');
+    return `<div class="card" style="margin-bottom:.55rem;${borde}">
+      <div class="card-head" style="display:flex;justify-content:space-between;align-items:center;gap:.75rem;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+          <span style="font-weight:600">${_h(capNombre(a.nombre))}</span>
+          <span class="sec-badge sec-${_attr(a.sector)}">${_h(a.sector||'—')}</span>
+          <span style="font-size:11px;color:var(--tx2)">${_h(a.curso||'')}</span>
+          <span style="font-size:11px;font-weight:700;padding:2px 9px;border-radius:11px;${DOC_NIVEL_STYLE[niv]||''}">${firmado?'✓ Firmado':(DOC_NIVEL_LABEL[niv]||'Sin firmar')}</span>
+          ${firmado && a.docFecha ? `<span style="font-size:11px;color:var(--tx2)">el ${_h(a.docFecha)}</span>` : ''}
+          ${dias!==null && docEstado(a)==='pendiente' ? `<span style="font-size:11px;color:var(--tx2)">${dias} día${dias===1?'':'s'} hábil${dias===1?'':'es'} sin firmar</span>` : ''}
+          ${dias===null && docEstado(a)==='pendiente' ? `<span style="font-size:11px;color:var(--tx2)">sin fecha de inicio registrada</span>` : ''}
+          ${a.docMotivo?`<span style="font-size:11px;color:var(--tx2)">· ${_h(a.docMotivo)}</span>`:''}
+        </div>
+        <div style="display:flex;gap:.35rem;flex-wrap:wrap">
+          ${!firmado?`<button class="btn btn-sm btn-p" onclick="docMarcarFirmado('${a._id}')">✓ Marcar firmado</button>`:''}
+          <button class="btn btn-sm" onclick="docAbrirEstado('${a._id}')">${firmado?'Cambiar estado':'Editar estado'}</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = html;
+};
+
+window.docOnSearch = function(){ const e=document.getElementById('docSearch'); docSearchVal=e?e.value:''; searchRerender('docSearch','renderDocumentacion'); };
+window.docCopiarSQL = async function(){
+  try{ await navigator.clipboard.writeText(DOC_SQL_INSTALACION); alert('SQL copiado. Pégalo en el SQL Editor de Supabase.'); }
+  catch(e){ prompt('Copia el SQL:', DOC_SQL_INSTALACION); }
+};
+
+function _docA(id){ return ALUMNOS.find(a=>String(a._id)===String(id)); }
+
+window.docMarcarFirmado = async function(id){
+  const a=_docA(id); if(!a) return;
+  const hoy=new Date().toISOString().slice(0,10);
+  const ok=await docGuardarEstado(a,{docEstado:'firmado', docFecha:hoy, docMotivo:null, docPor:_curUsuario()});
+  if(!ok) return;
+  _addHistorial('Documentación', `Firma registrada · ${capNombre(a.nombre)} · ${hoy}`);
+  renderDocumentacion();
+  try{ renderCurrent(); }catch(e){}
+  try{ updateNavBadges(); }catch(e){}
+};
+
+// ── Modal editar estado ──────────────────────────────────────────
+window.docAbrirEstado = function(id){
+  const a=_docA(id); if(!a) return;
+  document.getElementById('docEstAlumno').textContent = capNombre(a.nombre);
+  document.getElementById('docEstId').value = id;
+  document.getElementById('docEstSel').value = docEstado(a);
+  document.getElementById('docEstFecha').value = a.docFecha || new Date().toISOString().slice(0,10);
+  document.getElementById('docEstMotivo').innerHTML = docState.motivos.map(m=>`<option${a.docMotivo===m?' selected':''}>${_h(m)}</option>`).join('');
+  docEstSync();
+  document.getElementById('movDocEstado').classList.add('open');
+};
+window.docEstSync = function(){
+  const est=document.getElementById('docEstSel').value;
+  document.getElementById('docEstFechaWrap').style.display = est==='firmado' ? '' : 'none';
+  document.getElementById('docEstMotivoWrap').style.display = est==='firmado' ? 'none' : '';
+};
+window.docCerrarEstado = function(){ document.getElementById('movDocEstado').classList.remove('open'); };
+window.docGuardarEstadoModal = async function(){
+  const id=document.getElementById('docEstId').value;
+  const a=_docA(id); if(!a) return;
+  const est=document.getElementById('docEstSel').value;
+  let patch={docEstado:est, docPor:_curUsuario()};
+  if(est==='firmado'){
+    patch.docFecha = document.getElementById('docEstFecha').value || new Date().toISOString().slice(0,10);
+    patch.docMotivo = null;
+  } else {
+    patch.docMotivo = document.getElementById('docEstMotivo').value;
+    patch.docFecha = null;
+    // Opción 2 (respaldo): si no hay fecha de inicio de servicio, fijar ancla de conteo hoy
+    if(!a.fechaInicioServicio && !a.docDesde) patch.docDesde = new Date().toISOString().slice(0,10);
+  }
+  const ok=await docGuardarEstado(a,patch);
+  if(!ok) return;
+  _addHistorial('Documentación', `Estado actualizado · ${capNombre(a.nombre)} · ${est}${patch.docMotivo?' ('+patch.docMotivo+')':''}`);
+  docCerrarEstado();
+  renderDocumentacion();
+  try{ renderCurrent(); }catch(e){}
+  try{ updateNavBadges(); }catch(e){}
+};
+
+// ── Configuración → Documentación (motivos + interruptor aviso) ──
+const _docBaseRenderConfig = window.renderConfig;
+window.renderConfig = function(){
+  _docBaseRenderConfig();
+  const cont=document.getElementById('v-config');
+  if(!cont) return;
+  const card=document.createElement('div');
+  card.className='card'; card.id='doc-config-card';
+  card.innerHTML = `
+    <div class="card-head" style="display:flex;justify-content:space-between;align-items:center">
+      <span>📄 Documentación — motivos y avisos</span>
+      <button class="btn btn-p btn-sm" onclick="docGuardarConfig()">💾 Guardar</button>
+    </div>
+    <div class="card-body">
+      <div id="doc-cfg-status" style="display:none;font-size:12px;padding:.5rem .75rem;border-radius:6px;margin-bottom:.75rem"></div>
+      <div style="font-size:11px;color:var(--tx2);margin-bottom:.75rem">Motivos de no-firma (uno por línea). Umbral de vencimiento: ${DOC_DIAS_LIMITE} días hábiles desde el inicio de servicio.${docState.remoto?'':' <strong style="color:#B45309">Config local.</strong>'}</div>
+      <label style="display:flex;align-items:center;gap:.5rem;font-size:12px;margin-bottom:.9rem;cursor:pointer">
+        <input type="checkbox" id="doc-cfg-aviso" ${docState.avisoActivo?'checked':''}>
+        Mostrar aviso al abrir Cobrixa cuando haya firmas vencidas (+${DOC_DIAS_LIMITE} días)
+      </label>
+      <label style="font-size:11px;font-weight:700;display:block;margin-bottom:.25rem">Motivos de no-firma</label>
+      <textarea id="doc-cfg-motivos" style="width:100%;min-height:170px;font-family:'DM Sans',sans-serif;font-size:12px;padding:.6rem;border:1px solid var(--bdrm);border-radius:6px;resize:vertical">${_h(docState.motivos.join('\n'))}</textarea>
+    </div>`;
+  cont.appendChild(card);
+  if(!docState.cargado) docLoad().then(()=>{ if(curView==='config') window.renderConfig(); });
+};
+window.docGuardarConfig = async function(){
+  const mot=document.getElementById('doc-cfg-motivos').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  docState.motivos = mot.length?mot:DOC_MOTIVOS_DEFAULT.slice();
+  docState.avisoActivo = document.getElementById('doc-cfg-aviso').checked;
+  const ok1=await docSaveConfig('motivos', docState.motivos);
+  const ok2=await docSaveConfig('aviso_activo', docState.avisoActivo);
+  _docLSset('cobrixa_doc_aviso', docState.avisoActivo); // preferencia siempre local también
+  const st=document.getElementById('doc-cfg-status');
+  if(st){ const ok=ok1&&ok2; st.style.display='block';
+    st.style.background=ok?'#E8F5EE':'#FEE2E2'; st.style.color=ok?'#147A45':'#B91C1C';
+    st.textContent= ok?`✓ Guardado ${docState.remoto?'en Supabase':'localmente'}`:'✗ Error al guardar'; }
+  if(ok1&&ok2) _addHistorial('Documentación','Configuración actualizada');
+};
+
+// ── Badge de navegación ──────────────────────────────────────────
+const _docBaseNavBadges = window.updateNavBadges;
+window.updateNavBadges = function(){
+  if(typeof _docBaseNavBadges==='function') _docBaseNavBadges();
+  try{
+    const b=document.getElementById('nb-doc');
+    if(b && docState.cargado){
+      const n=docPendientes().filter(a=>{const nv=docNivel(a);return nv==='vencido'||nv==='critico';}).length;
+      b.textContent=n||''; b.classList.toggle('on',n>0);
+    }
+  }catch(e){}
+};
+
+// ── Modal ────────────────────────────────────────────────────────
+document.body.insertAdjacentHTML('beforeend', `
+<div class="overlay" id="movDocEstado" onclick="if(event.target===this)docCerrarEstado()">
+<div class="modal">
+  <h2>📄 Documentación</h2>
+  <div style="font-size:13px;font-weight:600;margin-bottom:1rem">Alumno: <span id="docEstAlumno"></span></div>
+  <input type="hidden" id="docEstId">
+  <div class="fg"><label>Estado</label>
+    <select id="docEstSel" onchange="docEstSync()">
+      <option value="firmado">Firmado</option>
+      <option value="pendiente">Pendiente de firma</option>
+      <option value="no_firma">No firmará</option>
+    </select>
+  </div>
+  <div class="fg" id="docEstFechaWrap"><label>Fecha de firma</label><input type="date" id="docEstFecha"></div>
+  <div class="fg" id="docEstMotivoWrap"><label>Motivo</label><select id="docEstMotivo"></select></div>
+  <p style="font-size:11px;color:var(--tx2)">Quien registra queda guardado para trazabilidad. Si no hay fecha de inicio de servicio, el conteo de días parte desde hoy.</p>
+  <div class="mact">
+    <button class="btn" onclick="docCerrarEstado()">Cancelar</button>
+    <button class="btn btn-p" onclick="docGuardarEstadoModal()">Guardar</button>
+  </div>
+</div>
+</div>`);
+
+// ── Aviso al abrir (si hay vencidos y el interruptor está activo) ─
+window.addEventListener('load', ()=>{
+  setTimeout(()=>{
+    docLoad().then(()=>{
+      try{ updateNavBadges(); }catch(e){}
+      try{ if(curView==='dashboard' || curView==='inicio') renderCurrent(); }catch(e){}
+      if(!docState.avisoActivo) return;
+      const venc = docPendientes().filter(a=>{const nv=docNivel(a);return nv==='vencido'||nv==='critico';});
+      if(venc.length){
+        const nombres = venc.slice(0,6).map(a=>capNombre(a.nombre)).join(', ');
+        setTimeout(()=>alert(`📄 Documentación pendiente\n\nHay ${venc.length} alumno(s) sin firmar el reglamento con más de ${DOC_DIAS_LIMITE} días o que se negaron:\n${nombres}${venc.length>6?'…':''}\n\nRevísalos en la sección Documentación. (Puedes desactivar este aviso en Configuración.)`), 600);
+      }
+    });
+  }, 3400);
 });
 
 })();
