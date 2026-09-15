@@ -1030,6 +1030,7 @@ body{background:#F4F2EE;}
   <button class="nav-btn" onclick="goTo('captacion',this)"><span class="nav-icon">📈</span>Captación</button>
 
   <div class="nav-sep"></div>
+  <button class="nav-btn" onclick="goTo('reportes',this)"><span class="nav-icon">📈</span>Reportes de ingresos</button>
   <button class="nav-btn" onclick="goTo('historial',this)"><span class="nav-icon">📋</span>Historial de cambios</button>
   <button class="nav-btn" onclick="goTo('config',this)"><span class="nav-icon">⚙️</span>Configuración</button>
 </div>
@@ -1074,6 +1075,7 @@ body{background:#F4F2EE;}
     <div class="view" id="v-anual"></div>
     <div class="view" id="v-captacion"></div>
     <div class="view" id="v-historial"></div>
+    <div class="view" id="v-reportes"></div>
     <div class="view" id="v-config"></div>
   </div>
 </div>
@@ -2888,18 +2890,98 @@ function updateAlumnoObs(idx,obs){
 }
 
 function marcarTodosPagado(){
-  if(!confirm(`¿Marcar todos como Pagado en ${curMes}?`)) return;
-  activos().forEach(a=>{ const idx=ALUMNOS.indexOf(a); if(alumnoActivoEnMes(a,curMes)) setPago(idx,curMes,'estado','Pagado'); });
-  // bulk sync
-  const pagoRows=activos().filter(a=>alumnoActivoEnMes(a,curMes)).map(a=>{
-    const idx=ALUMNOS.indexOf(a);
-    return {alumno_id:a._id,mes:curMes,anio:ANIO,estado:'Pagado',boleta:PAGOS[curMes]?.[idx]?.boleta||false,monto:getValorEfectivo(a,curMes),fecha_pago:PAGOS[curMes]?.[idx]?.fechaPago||todayISO()};
-  }).filter(r=>r.alumno_id);
-  if(pagoRows.length){
-    const chunks=[];for(let i=0;i<pagoRows.length;i+=50)chunks.push(pagoRows.slice(i,i+50));
-    Promise.all(chunks.map(ch=>_sb.from('pagos').upsert(ch,{onConflict:'alumno_id,mes,anio'}))).catch(e=>console.warn('Bulk pago error:',e));
+  const mes = curMes;
+  if(MESES_CERRADOS.has(mes)){ alert(`${mes} está cerrado. No se puede modificar.`); return; }
+
+  // ── 1. Clasificar SIN escribir nada ──────────────────────────────
+  // Solo se tocan Pendiente y Vencido. Todo lo demás se preserva:
+  // Exento, Convenio, Pagado parcial y Pagado ya son decisiones tomadas.
+  const MODIFICABLES = new Set(['Pendiente','Vencido']);
+  const aCambiar = [], preservados = {};
+  activos().forEach(a => {
+    if(!alumnoActivoEnMes(a, mes)) return;
+    const idx = ALUMNOS.indexOf(a);
+    const p = getPago(idx, mes);
+    if(MODIFICABLES.has(p.estado)){
+      aCambiar.push({a, idx, antes: p.estado, monto: getMontoPago(a, p, mes)});
+    } else {
+      preservados[p.estado] = (preservados[p.estado] || 0) + 1;
+    }
+  });
+
+  if(!aCambiar.length){
+    alert(`No hay nada que marcar en ${mes}.\n\nTodos los alumnos activos ya tienen un estado definido.`);
+    return;
   }
-  renderMensual();
+
+  // ── 2. Confirmación con números concretos ────────────────────────
+  const totalMonto = aCambiar.reduce((s,c) => s + c.monto, 0);
+  const detPres = Object.entries(preservados).map(([e,n]) => `   • ${n} en "${e}"`).join('\n');
+  const msg =
+    `MARCAR COMO PAGADO — ${mes} ${ANIO}\n\n` +
+    `Se marcarán ${aCambiar.length} alumnos como Pagado.\n` +
+    `Monto total: $${totalMonto.toLocaleString('es-CL')}\n\n` +
+    (detPres ? `NO se tocarán ${Object.values(preservados).reduce((a,b)=>a+b,0)} alumnos:\n${detPres}\n\n` : '') +
+    `Esta acción escribe en la base de datos. ¿Continuar?`;
+  if(!confirm(msg)) return;
+
+  _ejecutarMarcarTodosPagado(mes, aCambiar);
+}
+
+async function _ejecutarMarcarTodosPagado(mes, aCambiar){
+  // ── 3. Respaldo en memoria para poder revertir ────────────────────
+  const respaldo = aCambiar.map(c => ({
+    idx: c.idx,
+    prev: PAGOS[mes]?.[c.idx] ? JSON.parse(JSON.stringify(PAGOS[mes][c.idx])) : null
+  }));
+
+  try {
+    // ── 4. Aplicar en memoria (setPago registra el historial) ───────
+    aCambiar.forEach(c => setPago(c.idx, mes, 'estado', 'Pagado'));
+
+    // ── 5. Una sola escritura masiva, con el monto correcto ─────────
+    // Usa getMontoPago, que respeta montos manuales y primer mes proporcional.
+    const rows = aCambiar.filter(c => c.a._id).map(c => ({
+      alumno_id: c.a._id,
+      mes, anio: ANIO,
+      estado: 'Pagado',
+      boleta: PAGOS[mes]?.[c.idx]?.boleta || false,
+      monto: c.monto,
+      fecha_pago: PAGOS[mes]?.[c.idx]?.fechaPago || todayISO()
+    }));
+    const sinId = aCambiar.length - rows.length;
+
+    let escritos = 0;
+    for(let i = 0; i < rows.length; i += 50){
+      const ch = rows.slice(i, i + 50);
+      const {data, error} = await _sb.from('pagos')
+        .upsert(ch, {onConflict:'alumno_id,mes,anio'}).select('alumno_id');
+      if(error) throw error;
+      escritos += (data || []).length;
+    }
+
+    renderMensual();
+
+    if(escritos !== rows.length){
+      alert(`⚠ ATENCIÓN\n\nSe esperaban ${rows.length} filas y Supabase confirmó ${escritos}.\n\n` +
+            `Revisa el mes antes de continuar. Los datos en pantalla pueden no coincidir con la nube.`);
+    } else {
+      alert(`✓ Listo.\n\n${escritos} alumnos marcados como Pagado en ${mes}.` +
+            (sinId ? `\n\n${sinId} alumnos aún no existen en la nube y solo se marcaron localmente.` : ''));
+    }
+
+  } catch(err){
+    // ── 6. Revertir en memoria si la nube falló ────────────────────
+    console.error('marcarTodosPagado error:', err);
+    respaldo.forEach(r => {
+      if(r.prev) PAGOS[mes][r.idx] = r.prev;
+      else if(PAGOS[mes]) delete PAGOS[mes][r.idx];
+    });
+    renderMensual();
+    alert(`✗ ERROR AL GUARDAR\n\n${err.message}\n\n` +
+          `Se revirtieron los cambios en pantalla. Nada quedó a medias.\n` +
+          `Verifica el mes antes de reintentar.`);
+  }
 }
 
 // ══ CAPTACIÓN ══════════════════════════════════════════════════════
@@ -3527,13 +3609,23 @@ function renderConfig(){
       <input type="number" class="cfg-input" style="width:55px;text-align:center" id="cfg_t_${sec}" value="${FURGONES[sec].capT}" min="1" max="45">
     </div>`).join('')}
   </div></div>
+  <div class="card">
+    <div class="card-head" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Asignar jornada desde el curso</span>
+      <button class="btn btn-p btn-sm" onclick="previewJornadaCurso()">🔍 Ver vista previa</button>
+    </div>
+    <div class="card-body">
+      <div style="font-size:11px;color:var(--tx2);margin-bottom:.5rem">
+        Regla: curso termina en <b>A</b> → Mañana · termina en <b>B</b> → Tarde. Aplica también a KA/KB y PKA/PKB.
+      </div>
+      <div id="jc-preview" style="display:none"></div>
+    </div>
+  </div>
   <div class="card"><div class="card-head">Asignación masiva de jornada</div><div class="card-body">
     ${SECS.map(sec=>`<div class="cfg-row">
       <div class="color-dot" style="background:${SEC_COLORS[sec]}"></div>
       <div class="cfg-label">${sec}</div>
       <span style="font-size:11px;color:var(--tx2);margin-right:8px">${activos().filter(a=>a.sector===sec).length} alumnos activos</span>
-      <button class="btn btn-sm" onclick="asigJornada('${sec}','Mañana')">☀️ Todos Mañana</button>
-      <button class="btn btn-sm" style="margin-left:4px" onclick="asigJornada('${sec}','Tarde')">🌙 Todos Tarde</button>
       <span style="font-size:11px;margin-left:8px;color:${activos().filter(a=>a.sector===sec&&!a.jornada).length>0?'var(--rd)':'var(--gr)'}">
         Sin asignar: ${activos().filter(a=>a.sector===sec&&!a.jornada).length}
       </span>
@@ -3542,15 +3634,164 @@ function renderConfig(){
   document.getElementById('v-config').innerHTML=html;
 }
 
-async function asigJornada(sec,jornada){
-  if(!confirm(`¿Asignar "${jornada}" a todos los activos de ${sec}?`)) return;
-  ALUMNOS.forEach((a,i)=>{ if(a.sector===sec&&!a.baja) ALUMNOS[i].jornada=jornada; });
-  // bulk update jornada in Supabase
-  const ids=ALUMNOS.filter(a=>a.sector===sec&&!a.baja&&a._id).map(a=>a._id);
-  if(ids.length){
-    await _sb.from('alumnos').update({jornada}).in('id',ids).catch(e=>console.warn('asigJornada sync:',e));
+
+// ══ JORNADA DESDE CURSO ═══════════════════════════════════════════
+// Regla Conexión Escolar: el curso ya codifica la jornada.
+//   Termina en A -> Mañana  (1A, 3A, 8A, KA, PKA)
+//   Termina en B -> Tarde   (1B, 3B, 7B, KB, PKB)
+// Verificado: 182/182 alumnos cumplen la regla, sin excepciones.
+function jornadaDesdeCurso(curso){
+  const c = String(curso || '').trim().toUpperCase();
+  if(c.endsWith('A')) return 'Mañana';
+  if(c.endsWith('B')) return 'Tarde';
+  return '';
+}
+
+// Calcula (sin escribir nada) qué pasaría al aplicar la regla.
+function _calcJornadaCurso(){
+  const cambios = [], sinRegla = [], iguales = [];
+  ALUMNOS.forEach((a, i) => {
+    const nueva = jornadaDesdeCurso(a.curso);
+    if(!nueva){ sinRegla.push({i, a}); return; }
+    if(a.jornada === nueva){ iguales.push({i, a}); return; }
+    cambios.push({i, a, antes: a.jornada || '(vacío)', nueva});
+  });
+  return {cambios, sinRegla, iguales};
+}
+
+// PASO 1: vista previa. NO escribe nada en Supabase ni en memoria.
+// NOTA: no usa capM/capT a propósito. Las capacidades configuradas
+// están mal y su corrección requiere un análisis aparte.
+function previewJornadaCurso(){
+  const {cambios, sinRegla, iguales} = _calcJornadaCurso();
+  const box = document.getElementById('jc-preview');
+  if(!box) return;
+
+  const proy = {};
+  SECS.forEach(s => proy[s] = {M:0, T:0});
+  ALUMNOS.forEach(a => {
+    if(a.baja) return;
+    const j = jornadaDesdeCurso(a.curso) || a.jornada;
+    if(!proy[a.sector]) return;
+    if(j === 'Mañana') proy[a.sector].M++;
+    else if(j === 'Tarde') proy[a.sector].T++;
+  });
+
+  let h = `<div style="font-size:12px;line-height:1.7;margin-bottom:.75rem">
+    <b>${ALUMNOS.length}</b> alumnos revisados ·
+    <b style="color:var(--bl)">${cambios.length}</b> se actualizarán ·
+    <b>${iguales.length}</b> ya estaban correctos ·
+    <b style="color:${sinRegla.length ? 'var(--rd)' : 'var(--gr)'}">${sinRegla.length}</b> sin regla aplicable
+  </div>`;
+
+  if(sinRegla.length){
+    h += `<div style="font-size:11px;color:var(--rd);margin-bottom:.75rem">
+      ⚠ Cursos que no terminan en A ni B (quedarán sin tocar):
+      ${sinRegla.map(x => escHtml(x.a.nombre) + ' (' + escHtml(x.a.curso) + ')').join(' · ')}
+    </div>`;
   }
-  renderConfig();
+
+  h += `<div style="font-size:11px;font-weight:700;margin:.5rem 0 .25rem">Alumnos activos por sector y jornada</div>
+  <table style="width:100%;font-size:11px;border-collapse:collapse;margin-bottom:.25rem">
+    <tr style="text-align:left;color:var(--tx2)">
+      <th style="padding:3px 6px">Sector</th><th style="padding:3px 6px">Furgón</th>
+      <th style="padding:3px 6px;text-align:right">☀️ Mañana</th>
+      <th style="padding:3px 6px;text-align:right">🌙 Tarde</th>
+      <th style="padding:3px 6px;text-align:right">Total</th>
+    </tr>`;
+  let tM = 0, tT = 0;
+  SECS.forEach(s => {
+    const oM = proy[s].M, oT = proy[s].T;
+    tM += oM; tT += oT;
+    h += `<tr style="border-top:1px solid var(--bdrm)">
+      <td style="padding:3px 6px"><span style="background:${SEC_COLORS[s]};display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px"></span>${escHtml(s)}</td>
+      <td style="padding:3px 6px;color:var(--tx2)">${escHtml(FURGONES[s].nombre)}</td>
+      <td class="mono" style="padding:3px 6px;text-align:right">${oM}</td>
+      <td class="mono" style="padding:3px 6px;text-align:right">${oT}</td>
+      <td class="mono" style="padding:3px 6px;text-align:right;font-weight:700">${oM + oT}</td>
+    </tr>`;
+  });
+  h += `<tr style="border-top:2px solid var(--bdrm);font-weight:700">
+      <td style="padding:3px 6px" colspan="2">Total</td>
+      <td class="mono" style="padding:3px 6px;text-align:right">${tM}</td>
+      <td class="mono" style="padding:3px 6px;text-align:right">${tT}</td>
+      <td class="mono" style="padding:3px 6px;text-align:right">${tM + tT}</td>
+    </tr></table>
+  <div style="font-size:10px;color:var(--tx2);margin-bottom:.75rem">
+    Solo ocupación real. No se muestran cupos libres porque las capacidades configuradas no están validadas.
+  </div>`;
+
+  if(cambios.length){
+    h += `<div style="font-size:11px;font-weight:700;margin:.5rem 0 .25rem">Detalle de los ${cambios.length} cambios</div>
+    <div style="max-height:220px;overflow:auto;border:1px solid var(--bdrm);border-radius:6px">
+      <table style="width:100%;font-size:11px;border-collapse:collapse">`;
+    cambios.forEach(c => {
+      h += `<tr style="border-bottom:1px solid var(--bdrm)">
+        <td style="padding:2px 6px">${escHtml(c.a.nombre)}</td>
+        <td class="mono" style="padding:2px 6px">${escHtml(c.a.curso)}</td>
+        <td style="padding:2px 6px;color:var(--tx2)">${escHtml(c.antes)} →</td>
+        <td style="padding:2px 6px;font-weight:700">${escHtml(c.nueva)}</td>
+      </tr>`;
+    });
+    h += `</table></div>
+    <button id="jc-aplicar" class="btn btn-p btn-sm" style="margin-top:.75rem" onclick="aplicarJornadaCurso()">✓ Aplicar los ${cambios.length} cambios</button>`;
+  } else {
+    h += `<div style="font-size:12px;color:var(--gr)">✓ No hay nada que cambiar. Todos coinciden con la regla.</div>`;
+  }
+
+  h += `<div id="jc-status" style="display:none;font-size:12px;padding:.5rem .75rem;border-radius:6px;margin-top:.75rem"></div>`;
+  box.innerHTML = h;
+  box.style.display = 'block';
+}
+
+// PASO 2: aplicar. Escribe en Supabase primero, y solo si confirma, en memoria.
+async function aplicarJornadaCurso(){
+  const {cambios} = _calcJornadaCurso();
+  if(!cambios.length){ alert('No hay cambios que aplicar.'); return; }
+  if(!confirm(`Se actualizará la jornada de ${cambios.length} alumnos según su curso.\n\n¿Confirmas?`)) return;
+
+  const btn = document.getElementById('jc-aplicar');
+  const st  = document.getElementById('jc-status');
+  const setSt = (msg, ok) => {
+    if(!st) return;
+    st.style.display = 'block';
+    st.textContent = msg;
+    st.style.background = ok ? 'rgba(16,185,129,.12)' : 'rgba(239,68,68,.12)';
+    st.style.color = ok ? 'var(--gr)' : 'var(--rd)';
+  };
+  if(btn){ btn.disabled = true; btn.textContent = 'Guardando…'; }
+
+  try {
+    const LOTE = 50; // evita URLs demasiado largas en el filtro .in()
+    let escritos = 0, sinId = 0;
+
+    for(const jor of ['Mañana','Tarde']){
+      const ids = cambios.filter(c => c.nueva === jor && c.a._id).map(c => c.a._id);
+      sinId += cambios.filter(c => c.nueva === jor && !c.a._id).length;
+      for(let k = 0; k < ids.length; k += LOTE){
+        const lote = ids.slice(k, k + LOTE);
+        const {data, error} = await _sb.from('alumnos')
+          .update({jornada: jor}).in('id', lote).select('id');
+        if(error) throw error;
+        escritos += (data || []).length;
+      }
+    }
+
+    // Solo ahora se toca la memoria local
+    cambios.forEach(c => { ALUMNOS[c.i].jornada = c.nueva; });
+
+    setSt(`✓ Listo. ${escritos} filas confirmadas por Supabase de ${cambios.length} cambios.` +
+          (sinId ? ` ${sinId} alumnos aún no existen en la nube y solo se actualizaron localmente.` : ''), true);
+
+    renderConfig();
+    updateNavBadges();
+    setTimeout(previewJornadaCurso, 50);
+
+  } catch(err){
+    console.error('aplicarJornadaCurso error:', err);
+    setSt('✗ Error al guardar: ' + err.message + '. No se modificó nada en memoria.', false);
+    if(btn){ btn.disabled = false; btn.textContent = '✓ Reintentar'; }
+  }
 }
 
 // ══ MODAL ALUMNO ══════════════════════════════════════════════════
@@ -6795,6 +7036,394 @@ window.renderMovil = function(){
     setTimeout(()=>{ if(curView==='movil'){ _mvRetry=false; _mvOrigRender(); } }, 1500);
   }
 };
+
+})();
+
+/* ═══════════════════════════════════════════════════════════════════
+   MÓDULO REPORTES DE INGRESOS — Cobrixa
+   Solo lectura. No escribe en Supabase ni modifica estado operativo.
+   Variables propias (REP_*). Nunca toca curMes, fSec, fJor ni fTipo.
+   ═══════════════════════════════════════════════════════════════════ */
+(function(){
+'use strict';
+
+// ── Registro de la vista, sin modificar funciones existentes ──────
+TITLES.reportes = 'Reportes de ingresos';
+
+const _repBaseRenderCurrent = window.renderCurrent;
+window.renderCurrent = function(){
+  _repBaseRenderCurrent();
+  if(curView === 'reportes') renderReportes();
+};
+
+// ── Estado propio del módulo ─────────────────────────────────────
+let REP_MESES = new Set();          // meses seleccionados
+let REP_JORNADA = '';               // '' | 'Mañana' | 'Tarde'
+const REP_ANIO = (typeof ANIO !== 'undefined') ? ANIO : 2026;
+let _repLibs = {xlsx:false, pdf:false};
+
+// ── Utilidades ───────────────────────────────────────────────────
+const _repMoney = n => '$' + (Number(n)||0).toLocaleString('es-CL');
+const _repMesesCerrados = () => MESES.filter(m => MESES_CERRADOS.has(m));
+
+function _repCargarLib(src, test){
+  return new Promise((resolve, reject) => {
+    if(test()) return resolve();
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => test() ? resolve() : reject(new Error('Cargó pero no quedó disponible'));
+    s.onerror = () => reject(new Error('No se pudo descargar: ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+// ── Núcleo de cálculo ────────────────────────────────────────────
+// Devuelve una fila por alumno/mes con su estado y monto.
+// Usa exclusivamente las funciones ya existentes del sistema.
+function repCalcular(){
+  const meses = MESES.filter(m => REP_MESES.has(m));
+  const filas = [];
+  meses.forEach(mes => {
+    ALUMNOS.forEach((a, idx) => {
+      if(!alumnoActivoEnMes(a, mes)) return;
+      const jor = a.jornada || '';
+      if(REP_JORNADA && jor !== REP_JORNADA) return;
+      const p = getPago(idx, mes);
+      const monto = getMontoPago(a, p, mes);
+      filas.push({
+        mes, nombre: a.nombre, curso: a.curso || '', sector: a.sector,
+        furgon: (FURGONES[a.sector] && FURGONES[a.sector].nombre) || '',
+        jornada: jor || '(sin asignar)', tipo: a.tipo || '',
+        estado: p.estado, monto,
+        pagado:  p.estado === 'Pagado'         ? monto : 0,
+        exento:  p.estado === 'Exento'         ? monto : 0,
+        parcial: p.estado === 'Pagado parcial' ? monto : 0,
+        nocobra: ESTADOS_COBRADO.has(p.estado) ? 0 : monto
+      });
+    });
+  });
+  return {meses, filas};
+}
+
+function _repAgrupar(filas, meses){
+  const claves = [];
+  SECS.forEach(s => ['Mañana','Tarde','(sin asignar)'].forEach(j => claves.push(s + '||' + j)));
+  const mapa = {};
+  claves.forEach(k => {
+    mapa[k] = {porMes:{}, pagado:0, exento:0, parcial:0, nocobra:0, n:0};
+    meses.forEach(m => mapa[k].porMes[m] = 0);
+  });
+  filas.forEach(f => {
+    const k = f.sector + '||' + f.jornada;
+    if(!mapa[k]) return;
+    mapa[k].porMes[f.mes] += f.pagado + f.exento + f.parcial;
+    mapa[k].pagado  += f.pagado;
+    mapa[k].exento  += f.exento;
+    mapa[k].parcial += f.parcial;
+    mapa[k].nocobra += f.nocobra;
+    mapa[k].n++;
+  });
+  return mapa;
+}
+
+// ── Render de la vista ───────────────────────────────────────────
+function renderReportes(){
+  const cerrados = _repMesesCerrados();
+  const sel = MESES.filter(m => REP_MESES.has(m));
+
+  let h = `<div class="card"><div class="card-head">Período</div><div class="card-body">`;
+
+  if(!cerrados.length){
+    h += `<div style="font-size:12px;color:var(--rd)">No hay meses cerrados todavía. El reporte solo trabaja sobre meses cerrados.</div></div></div>`;
+    document.getElementById('v-reportes').innerHTML = h;
+    return;
+  }
+
+  h += `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:.6rem">`;
+  MESES.forEach(m => {
+    const cerrado = MESES_CERRADOS.has(m);
+    const on = REP_MESES.has(m);
+    h += `<button class="btn btn-sm" ${cerrado?'':'disabled'}
+      style="opacity:${cerrado?1:.35};${on?'background:var(--bl);color:#fff;border-color:var(--bl)':''}"
+      onclick="repToggleMes('${m}')" title="${cerrado?'':'Mes abierto, no disponible'}">${m}${cerrado?'':' 🔓'}</button>`;
+  });
+  h += `</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12px">
+      <button class="btn btn-sm" onclick="repTodos()">Todos los cerrados</button>
+      <button class="btn btn-sm" onclick="repNinguno()">Ninguno</button>
+      <span style="margin-left:8px">Jornada:</span>
+      <select class="cex-select" style="font-size:12px;padding:2px 6px" onchange="repSetJornada(this.value)">
+        <option value=""       ${REP_JORNADA===''?'selected':''}>Todas</option>
+        <option value="Mañana" ${REP_JORNADA==='Mañana'?'selected':''}>Mañana</option>
+        <option value="Tarde"  ${REP_JORNADA==='Tarde'?'selected':''}>Tarde</option>
+      </select>
+      <span style="color:var(--tx2)">Año ${REP_ANIO}</span>
+    </div></div></div>`;
+
+  if(!sel.length){
+    h += `<div class="card"><div class="card-body"><div style="font-size:12px;color:var(--tx2)">Selecciona al menos un mes cerrado.</div></div></div>`;
+    document.getElementById('v-reportes').innerHTML = h;
+    return;
+  }
+
+  const {meses, filas} = repCalcular();
+  const mapa = _repAgrupar(filas, meses);
+
+  // ── Tabla 1: ingresos por sector y jornada ──
+  h += `<div class="card"><div class="card-head" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Ingresos por sector y jornada</span>
+      <span>
+        <button class="btn btn-sm" onclick="repExportExcel()">⬇ Excel</button>
+        <button class="btn btn-p btn-sm" style="margin-left:6px" onclick="repExportPDF()">⬇ PDF</button>
+      </span>
+    </div><div class="card-body" style="overflow:auto">
+    <table style="width:100%;font-size:12px;border-collapse:collapse">
+      <tr style="text-align:left;color:var(--tx2)">
+        <th style="padding:4px 8px">Sector</th><th style="padding:4px 8px">Jornada</th>
+        ${meses.map(m=>`<th style="padding:4px 8px;text-align:right">${m}</th>`).join('')}
+        <th style="padding:4px 8px;text-align:right">Total</th>
+      </tr>`;
+
+  const totMes = {}; meses.forEach(m => totMes[m] = 0);
+  let granTotal = 0;
+
+  SECS.forEach(s => {
+    let subMes = {}; meses.forEach(m => subMes[m] = 0); let sub = 0;
+    ['Mañana','Tarde','(sin asignar)'].forEach(j => {
+      const d = mapa[s + '||' + j];
+      if(!d || !d.n) return;
+      const tot = meses.reduce((t,m) => t + d.porMes[m], 0);
+      sub += tot; meses.forEach(m => { subMes[m] += d.porMes[m]; totMes[m] += d.porMes[m]; });
+      h += `<tr style="border-top:1px solid var(--bdrm)">
+        <td style="padding:4px 8px"><span style="background:${SEC_COLORS[s]};display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px"></span>${escHtml(s)}</td>
+        <td style="padding:4px 8px;color:var(--tx2)">${escHtml(j)}</td>
+        ${meses.map(m=>`<td class="mono" style="padding:4px 8px;text-align:right">${_repMoney(d.porMes[m])}</td>`).join('')}
+        <td class="mono" style="padding:4px 8px;text-align:right;font-weight:700">${_repMoney(tot)}</td>
+      </tr>`;
+    });
+    granTotal += sub;
+    h += `<tr style="border-top:1px solid var(--bdrm);background:var(--sur);font-weight:700">
+      <td style="padding:4px 8px" colspan="2">Subtotal ${escHtml(s)}</td>
+      ${meses.map(m=>`<td class="mono" style="padding:4px 8px;text-align:right">${_repMoney(subMes[m])}</td>`).join('')}
+      <td class="mono" style="padding:4px 8px;text-align:right">${_repMoney(sub)}</td>
+    </tr>`;
+  });
+
+  h += `<tr style="border-top:2px solid var(--bdrm);font-weight:700">
+      <td style="padding:6px 8px" colspan="2">TOTAL</td>
+      ${meses.map(m=>`<td class="mono" style="padding:6px 8px;text-align:right">${_repMoney(totMes[m])}</td>`).join('')}
+      <td class="mono" style="padding:6px 8px;text-align:right">${_repMoney(granTotal)}</td>
+    </tr></table>
+    <div style="font-size:10px;color:var(--tx2);margin-top:.5rem">
+      Incluye Pagado + Exento + Pagado parcial. El desglose está en la tabla siguiente.
+    </div></div></div>`;
+
+  // ── Tabla 2: desglose por estado ──
+  h += `<div class="card"><div class="card-head">Desglose por estado del período</div>
+    <div class="card-body" style="overflow:auto">
+    <table style="width:100%;font-size:12px;border-collapse:collapse">
+      <tr style="text-align:left;color:var(--tx2)">
+        <th style="padding:4px 8px">Sector</th>
+        <th style="padding:4px 8px;text-align:right">Pagado</th>
+        <th style="padding:4px 8px;text-align:right">Exento</th>
+        <th style="padding:4px 8px;text-align:right">Pagado parcial</th>
+        <th style="padding:4px 8px;text-align:right">No cobrado</th>
+      </tr>`;
+  let tp=0, te=0, tpa=0, tn=0;
+  SECS.forEach(s => {
+    let p=0,e=0,pa=0,n=0;
+    ['Mañana','Tarde','(sin asignar)'].forEach(j => {
+      const d = mapa[s+'||'+j]; if(!d) return;
+      p+=d.pagado; e+=d.exento; pa+=d.parcial; n+=d.nocobra;
+    });
+    tp+=p; te+=e; tpa+=pa; tn+=n;
+    h += `<tr style="border-top:1px solid var(--bdrm)">
+      <td style="padding:4px 8px"><span style="background:${SEC_COLORS[s]};display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px"></span>${escHtml(s)}</td>
+      <td class="mono" style="padding:4px 8px;text-align:right">${_repMoney(p)}</td>
+      <td class="mono" style="padding:4px 8px;text-align:right">${_repMoney(e)}</td>
+      <td class="mono" style="padding:4px 8px;text-align:right">${_repMoney(pa)}</td>
+      <td class="mono" style="padding:4px 8px;text-align:right;color:${n>0?'var(--rd)':'inherit'}">${_repMoney(n)}</td>
+    </tr>`;
+  });
+  h += `<tr style="border-top:2px solid var(--bdrm);font-weight:700">
+      <td style="padding:6px 8px">TOTAL</td>
+      <td class="mono" style="padding:6px 8px;text-align:right">${_repMoney(tp)}</td>
+      <td class="mono" style="padding:6px 8px;text-align:right">${_repMoney(te)}</td>
+      <td class="mono" style="padding:6px 8px;text-align:right">${_repMoney(tpa)}</td>
+      <td class="mono" style="padding:6px 8px;text-align:right">${_repMoney(tn)}</td>
+    </tr></table>
+    <div id="rep-status" style="display:none;font-size:12px;padding:.5rem .75rem;border-radius:6px;margin-top:.75rem"></div>
+    </div></div>`;
+
+  document.getElementById('v-reportes').innerHTML = h;
+}
+
+// ── Controles ────────────────────────────────────────────────────
+function repToggleMes(m){
+  if(!MESES_CERRADOS.has(m)) return;
+  REP_MESES.has(m) ? REP_MESES.delete(m) : REP_MESES.add(m);
+  renderReportes();
+}
+function repTodos(){ REP_MESES = new Set(_repMesesCerrados()); renderReportes(); }
+function repNinguno(){ REP_MESES = new Set(); renderReportes(); }
+function repSetJornada(v){ REP_JORNADA = v; renderReportes(); }
+
+function _repStatus(msg, ok){
+  const st = document.getElementById('rep-status');
+  if(!st) return;
+  st.style.display = 'block';
+  st.textContent = msg;
+  st.style.background = ok ? 'rgba(16,185,129,.12)' : 'rgba(239,68,68,.12)';
+  st.style.color = ok ? 'var(--gr)' : 'var(--rd)';
+}
+
+function _repPeriodo(meses){
+  return meses.length === 1 ? meses[0] : meses[0] + ' a ' + meses[meses.length-1];
+}
+
+// ── Export Excel ─────────────────────────────────────────────────
+async function repExportExcel(){
+  const {meses, filas} = repCalcular();
+  if(!meses.length){ _repStatus('Selecciona al menos un mes.', false); return; }
+  _repStatus('Cargando librería de Excel…', true);
+  try {
+    await _repCargarLib('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+                        () => typeof XLSX !== 'undefined');
+    _repLibs.xlsx = true;
+  } catch(e){
+    _repStatus('No se pudo cargar la librería de Excel. Revisa tu conexión e intenta de nuevo.', false);
+    return;
+  }
+
+  const mapa = _repAgrupar(filas, meses);
+
+  // Hoja 1: resumen
+  const h1 = [['Sector','Jornada', ...meses, 'Total']];
+  SECS.forEach(s => {
+    ['Mañana','Tarde','(sin asignar)'].forEach(j => {
+      const d = mapa[s+'||'+j]; if(!d || !d.n) return;
+      const vals = meses.map(m => d.porMes[m]);
+      h1.push([s, j, ...vals, vals.reduce((a,b)=>a+b,0)]);
+    });
+  });
+  const totF = ['TOTAL',''];
+  meses.forEach(m => totF.push(SECS.reduce((t,s) =>
+    t + ['Mañana','Tarde','(sin asignar)'].reduce((u,j)=> u + ((mapa[s+'||'+j]||{porMes:{}}).porMes[m]||0), 0), 0)));
+  totF.push(totF.slice(2).reduce((a,b)=>a+b,0));
+  h1.push(totF);
+
+  // Hoja 2: estados
+  const h2 = [['Sector','Pagado','Exento','Pagado parcial','No cobrado']];
+  SECS.forEach(s => {
+    let p=0,e=0,pa=0,n=0;
+    ['Mañana','Tarde','(sin asignar)'].forEach(j => {
+      const d = mapa[s+'||'+j]; if(!d) return;
+      p+=d.pagado; e+=d.exento; pa+=d.parcial; n+=d.nocobra;
+    });
+    h2.push([s,p,e,pa,n]);
+  });
+
+  // Hoja 3: detalle
+  const h3 = [['Mes','Año','Sector','Furgón','Jornada','Alumno','Curso','Servicio','Estado','Monto']];
+  filas.forEach(f => h3.push([f.mes, REP_ANIO, f.sector, f.furgon, f.jornada,
+                              f.nombre, f.curso, f.tipo, f.estado, f.monto]));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(h1), 'Resumen');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(h2), 'Estados');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(h3), 'Detalle');
+  const nombre = `Cobrixa_Ingresos_${REP_ANIO}_${_repPeriodo(meses).replace(/ /g,'')}` +
+                 (REP_JORNADA ? '_' + REP_JORNADA : '') + '.xlsx';
+  XLSX.writeFile(wb, nombre);
+  _repStatus(`✓ Excel generado: ${nombre} · ${filas.length} filas de detalle.`, true);
+}
+
+// ── Export PDF ───────────────────────────────────────────────────
+async function repExportPDF(){
+  const {meses, filas} = repCalcular();
+  if(!meses.length){ _repStatus('Selecciona al menos un mes.', false); return; }
+  _repStatus('Cargando librería de PDF…', true);
+  try {
+    await _repCargarLib('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js',
+                        () => !!(window.jspdf && window.jspdf.jsPDF));
+    await _repCargarLib('https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js',
+                        () => typeof window.jspdf.jsPDF.API.autoTable === 'function');
+    _repLibs.pdf = true;
+  } catch(e){
+    _repStatus('No se pudo cargar la librería de PDF. Revisa tu conexión e intenta de nuevo.', false);
+    return;
+  }
+
+  const mapa = _repAgrupar(filas, meses);
+  const {jsPDF} = window.jspdf;
+  const doc = new jsPDF({orientation: meses.length > 4 ? 'landscape' : 'portrait', unit:'pt', format:'a4'});
+  const W = doc.internal.pageSize.getWidth();
+
+  doc.setFontSize(15); doc.setFont(undefined,'bold');
+  doc.text('Conexión Escolar — Ingresos por sector y jornada', 40, 45);
+  doc.setFontSize(9); doc.setFont(undefined,'normal');
+  doc.text(`Período: ${_repPeriodo(meses)} ${REP_ANIO}` +
+           (REP_JORNADA ? ` · Jornada: ${REP_JORNADA}` : '') , 40, 62);
+  doc.text(`Generado: ${new Date().toLocaleString('es-CL')}`, 40, 75);
+
+  const body = [];
+  SECS.forEach(s => {
+    ['Mañana','Tarde','(sin asignar)'].forEach(j => {
+      const d = mapa[s+'||'+j]; if(!d || !d.n) return;
+      const vals = meses.map(m => d.porMes[m]);
+      body.push([s, j, ...vals.map(_repMoney), _repMoney(vals.reduce((a,b)=>a+b,0))]);
+    });
+  });
+  const totRow = ['TOTAL',''];
+  let gt = 0;
+  meses.forEach(m => {
+    const v = SECS.reduce((t,s) => t + ['Mañana','Tarde','(sin asignar)']
+      .reduce((u,j)=> u + ((mapa[s+'||'+j]||{porMes:{}}).porMes[m]||0), 0), 0);
+    gt += v; totRow.push(_repMoney(v));
+  });
+  totRow.push(_repMoney(gt));
+  body.push(totRow);
+
+  doc.autoTable({
+    startY: 90, head: [['Sector','Jornada', ...meses, 'Total']], body,
+    styles:{fontSize:8, cellPadding:3}, headStyles:{fillColor:[14,28,47]},
+    columnStyles:{0:{cellWidth:70}, 1:{cellWidth:55}},
+    didParseCell: d => { if(d.row.index === body.length-1) d.cell.styles.fontStyle = 'bold'; }
+  });
+
+  const est = [];
+  SECS.forEach(s => {
+    let p=0,e=0,pa=0,n=0;
+    ['Mañana','Tarde','(sin asignar)'].forEach(j => {
+      const d = mapa[s+'||'+j]; if(!d) return;
+      p+=d.pagado; e+=d.exento; pa+=d.parcial; n+=d.nocobra;
+    });
+    est.push([s,_repMoney(p),_repMoney(e),_repMoney(pa),_repMoney(n)]);
+  });
+  doc.autoTable({
+    startY: doc.lastAutoTable.finalY + 22,
+    head: [['Sector','Pagado','Exento','Pagado parcial','No cobrado']], body: est,
+    styles:{fontSize:8, cellPadding:3}, headStyles:{fillColor:[26,53,87]}
+  });
+
+  doc.setFontSize(7); doc.setTextColor(120);
+  doc.text('Reporte de solo lectura generado por Cobrixa. No incluye costos operacionales.',
+           40, doc.internal.pageSize.getHeight() - 25);
+
+  const nombre = `Cobrixa_Ingresos_${REP_ANIO}_${_repPeriodo(meses).replace(/ /g,'')}` +
+                 (REP_JORNADA ? '_' + REP_JORNADA : '') + '.pdf';
+  doc.save(nombre);
+  _repStatus(`✓ PDF generado: ${nombre}`, true);
+}
+
+// ── Exposición global ────────────────────────────────────────────
+window.renderReportes  = renderReportes;
+window.repToggleMes    = repToggleMes;
+window.repTodos        = repTodos;
+window.repNinguno      = repNinguno;
+window.repSetJornada   = repSetJornada;
+window.repExportExcel  = repExportExcel;
+window.repExportPDF    = repExportPDF;
 
 })();
 </script>
